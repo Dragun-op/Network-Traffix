@@ -536,11 +536,14 @@
       const { useState, useMemo, useEffect } = React;
 
       /* =====================================================================
-   MOCK DATA LAYER
-   Everything in this block stands in for the FastAPI backend.
-   Swap `fetchIncidents()` / `fetchSummary()` for real `fetch()` calls
-   against the endpoints described in the README once the API exists.
+   API LAYER
+   Talks to the FastAPI backend (backend/main.py). If it can't be reached
+   — not running yet, wrong port, CORS misconfigured — this quietly falls
+   back to generated mock data so the UI never goes blank while you're
+   wiring things up. Watch the console for a warning when that happens.
    ===================================================================== */
+
+      const API_BASE = "http://127.0.0.1:8000";
 
       const ATTACK_TYPES = [
         "DDoS",
@@ -627,24 +630,53 @@
 
       const MOCK_INCIDENTS = genMockIncidents(42);
 
-      // Stand-ins for real network calls. Replace bodies with:
-      //   const res = await fetch('/api/incidents?...'); return res.json();
+      let usingMockData = false;
+
       async function fetchIncidents() {
-        await new Promise((r) => setTimeout(r, 250));
-        return MOCK_INCIDENTS;
+        try {
+          const res = await fetch(`${API_BASE}/api/incidents?limit=500`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          return data.items;
+        } catch (err) {
+          console.warn(
+            "Backend unreachable, falling back to mock incidents:",
+            err.message,
+          );
+          usingMockData = true;
+          await new Promise((r) => setTimeout(r, 200));
+          return MOCK_INCIDENTS;
+        }
       }
+
       async function fetchSummary() {
-        await new Promise((r) => setTimeout(r, 150));
-        const bySeverity = Object.fromEntries(
-          SEVERITIES.map((s) => [
-            s,
-            MOCK_INCIDENTS.filter((i) => i.severity === s).length,
-          ]),
-        );
-        return {
-          total: MOCK_INCIDENTS.length,
-          ...bySeverity,
-        };
+        try {
+          const res = await fetch(`${API_BASE}/api/summary`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return await res.json();
+        } catch (err) {
+          usingMockData = true;
+          const bySeverity = Object.fromEntries(
+            SEVERITIES.map((s) => [
+              s,
+              MOCK_INCIDENTS.filter((i) => i.severity === s).length,
+            ]),
+          );
+          return { total: MOCK_INCIDENTS.length, ...bySeverity };
+        }
+      }
+
+      // The list endpoint omits `explanation` to stay light; fetch it on demand
+      // when a row is expanded.
+      async function fetchIncidentDetail(id) {
+        try {
+          const res = await fetch(`${API_BASE}/api/incidents/${id}`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return await res.json();
+        } catch (err) {
+          const mock = MOCK_INCIDENTS.find((i) => i.id === id);
+          return mock || null;
+        }
       }
 
       /* ===================================================================== */
@@ -716,31 +748,42 @@
         );
       }
 
-      function ExplainRow({ incident }) {
+      function ExplainRow({ explanation }) {
         return (
           <tr className="explain-row">
             <td colSpan={8}>
               <div className="explain-title">
                 Why this was flagged — top contributing features
               </div>
-              {incident.explanation.map((f) => (
-                <div className="feature-bar-row" key={f.feature}>
-                  <div className="feature-name">{f.feature}</div>
-                  <div className="feature-track">
-                    <div
-                      className="feature-fill"
-                      style={{ width: `${f.contribution}%` }}
-                    ></div>
-                  </div>
-                  <div className="feature-pct">{f.contribution}%</div>
+              {!explanation && (
+                <div style={{ fontSize: "13px", color: "var(--color-muted)" }}>
+                  Loading explanation…
                 </div>
-              ))}
+              )}
+              {explanation &&
+                explanation.map((f) => (
+                  <div className="feature-bar-row" key={f.feature}>
+                    <div className="feature-name">{f.feature}</div>
+                    <div className="feature-track">
+                      <div
+                        className="feature-fill"
+                        style={{ width: `${f.contribution}%` }}
+                      ></div>
+                    </div>
+                    <div className="feature-pct">{f.contribution}%</div>
+                  </div>
+                ))}
             </td>
           </tr>
         );
       }
 
-      function IncidentsTable({ incidents, expandedId, setExpandedId }) {
+      function IncidentsTable({
+        incidents,
+        expandedId,
+        onExpand,
+        explanations,
+      }) {
         if (incidents.length === 0) {
           return (
             <div className="table-card">
@@ -768,11 +811,7 @@
               <tbody>
                 {incidents.map((inc) => (
                   <React.Fragment key={inc.id}>
-                    <tr
-                      onClick={() =>
-                        setExpandedId(expandedId === inc.id ? null : inc.id)
-                      }
-                    >
+                    <tr onClick={() => onExpand(inc.id)}>
                       <td>{timeAgo(inc.timestamp)}</td>
                       <td className="mono">{inc.src_ip}</td>
                       <td className="mono">{inc.dst_ip}</td>
@@ -786,7 +825,9 @@
                         <span className="status-pill">{inc.status}</span>
                       </td>
                     </tr>
-                    {expandedId === inc.id && <ExplainRow incident={inc} />}
+                    {expandedId === inc.id && (
+                      <ExplainRow explanation={explanations[inc.id]} />
+                    )}
                   </React.Fragment>
                 ))}
               </tbody>
@@ -803,6 +844,7 @@
         const [search, setSearch] = useState("");
         const [attackType, setAttackType] = useState("all");
         const [expandedId, setExpandedId] = useState(null);
+        const [explanations, setExplanations] = useState({});
 
         useEffect(() => {
           fetchIncidents().then((data) => {
@@ -811,6 +853,24 @@
           });
           fetchSummary().then(setSummary);
         }, []);
+
+        function handleExpand(id) {
+          if (expandedId === id) {
+            setExpandedId(null);
+            return;
+          }
+          setExpandedId(id);
+          if (!explanations[id]) {
+            fetchIncidentDetail(id).then((detail) => {
+              if (detail && detail.explanation) {
+                setExplanations((prev) => ({
+                  ...prev,
+                  [id]: detail.explanation,
+                }));
+              }
+            });
+          }
+        }
 
         function toggleSeverity(sev) {
           setActiveSeverities((prev) =>
@@ -936,13 +996,16 @@
               <IncidentsTable
                 incidents={filtered}
                 expandedId={expandedId}
-                setExpandedId={setExpandedId}
+                onExpand={handleExpand}
+                explanations={explanations}
               />
             )}
 
             <div className="footnote">
-              Showing {filtered.length} of {incidents.length} incidents · mock
-              data, pending FastAPI integration
+              Showing {filtered.length} of {incidents.length} incidents
+              {usingMockData
+                ? " · backend unreachable, showing mock data"
+                : " · live from FastAPI"}
             </div>
           </div>
         );
