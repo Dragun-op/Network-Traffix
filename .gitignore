@@ -22,3 +22,10 @@ web_modules/
 *.log
 __pycache__/
 .cache/
+
+*.pyc
+.pytest_cache/
+network_traffix.db
+.env
+ml_artifacts/
+*.egg-info/
