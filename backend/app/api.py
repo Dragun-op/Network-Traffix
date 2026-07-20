@@ -16,7 +16,8 @@ from app.schemas import (
     SummaryOut,
     ThresholdPatch,
 )
-from app.services import incidents_service, metrics_service, summary_service
+from app.schemas_predict import PredictIn, PredictOut
+from app.services import incidents_service, metrics_service, predict_service, summary_service
 
 router = APIRouter(prefix="/api")
 
@@ -68,6 +69,16 @@ def patch_incident(incident_id: str, body: IncidentPatch, db: Session = Depends(
 @router.get("/summary", response_model=SummaryOut)
 def get_summary(db: Session = Depends(get_db)):
     return summary_service.get_summary(db)
+
+
+@router.post("/predict", response_model=PredictOut)
+def predict(body: PredictIn):
+    """Score a single pasted CICIDS row and return the prediction + SHAP
+    explanation. Stateless -- does not create an incident."""
+    try:
+        return predict_service.predict(body.row)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/metrics", response_model=MetricsOut)

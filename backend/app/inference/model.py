@@ -4,8 +4,8 @@ Inference layer, hidden behind one function: `get_scorer()`.
 Why this exists: the backend must not be blocked on the ML teammate's
 training pipeline. `RuleBasedScorer` gives every downstream piece (API,
 replay worker, tests) something real to call today. The moment
-`ml_artifacts/model.pkl` + `features.json` exist, `get_scorer()` picks up
-`TrainedModelScorer` instead -- nothing else in the codebase changes.
+`model_artifacts_dir/model.pkl` + `features.json` exist, `get_scorer()` picks
+up `TrainedModelScorer` instead -- nothing else in the codebase changes.
 
 Both scorers implement the same contract:
     score(flow: dict) -> ScoredFlow(attack_type, confidence, severity, raw_features)
@@ -18,9 +18,13 @@ from pathlib import Path
 
 from app.config import get_settings
 
+# Display names shown in the UI. The trained model is trained to emit these exact
+# strings as its class labels (see ml/train.py DISPLAY_LABEL), and "BENIGN" is the
+# sentinel that means "normal traffic -> raise no incident".
 ATTACK_TYPES = [
     "DDoS", "DoS", "Port Scan", "Brute Force", "Botnet", "Web Attack", "Infiltration",
 ]
+NORMAL_LABELS = ("Normal", "BENIGN")
 
 
 @dataclass
@@ -86,8 +90,13 @@ class RuleBasedScorer:
 
 class TrainedModelScorer:
     """
-    Real scorer, activated automatically once the ML teammate's artifacts
-    exist. Loads model.pkl + features.json once at process startup.
+    Real scorer, activated automatically once the ML teammate's artifacts exist.
+    Loads model.pkl + features.json once at process startup.
+
+    Feature handling goes through the SAME feature_pipeline the model was trained
+    with (via FeatureExtractor + preprocessor.json), so a live flow is turned into
+    exactly the vector training used -- no train/serve skew. If preprocessor.json
+    is absent it falls back to a raw positional lookup so the backend still runs.
     """
 
     name = "trained_model"
@@ -95,21 +104,56 @@ class TrainedModelScorer:
     def __init__(self, artifacts_dir: Path, threshold: float):
         import joblib  # imported lazily -- only required once artifacts exist
 
-        self.threshold = threshold
         self.model = joblib.load(artifacts_dir / "model.pkl")
         self.features: list[str] = json.loads((artifacts_dir / "features.json").read_text())
+        self.classes = list(self.model.classes_)
+
+        # Operating threshold: prefer the value train.py calibrated (threshold.json);
+        # fall back to the backend's configured threshold otherwise.
+        self.threshold = threshold
+        tpath = artifacts_dir / "threshold.json"
+        if tpath.exists():
+            try:
+                self.threshold = float(json.loads(tpath.read_text())["threshold"])
+            except Exception:
+                pass
+
+        # Parity transform (same code as training). Optional so the backend never
+        # hard-fails if only the raw model is present.
+        self.extractor = None
+        if (artifacts_dir / "preprocessor.json").exists():
+            try:
+                from app.inference.feature_extract import FeatureExtractor
+                self.extractor = FeatureExtractor(str(artifacts_dir))
+            except Exception:
+                self.extractor = None
 
         shap_path = artifacts_dir / "shap_explainer.pkl"
         self.shap_explainer = joblib.load(shap_path) if shap_path.exists() else None
 
-    def score(self, flow: dict) -> ScoredFlow:
-        x = [[flow.get(f, 0) for f in self.features]]
-        proba = self.model.predict_proba(x)[0]
-        classes = list(self.model.classes_)
-        best_idx = max(range(len(proba)), key=lambda i: proba[i])
-        label, confidence = classes[best_idx], round(float(proba[best_idx]) * 100)
+    def _vectorize(self, flow: dict):
+        if self.extractor is not None:
+            return self.extractor.transform_one(flow)        # (1, n) float32, parity
+        # Fallback: raw positional lookup (missing -> 0). Used only if no
+        # preprocessor.json shipped; no imputation/inf handling in this path.
+        return [[flow.get(f, 0) for f in self.features]]
 
-        if label in ("Normal", "BENIGN") or confidence / 100 < self.threshold:
+    def score(self, flow: dict) -> ScoredFlow:
+        x = self._vectorize(flow)
+        proba = self.model.predict_proba(x)[0]
+        best_idx = max(range(len(proba)), key=lambda i: proba[i])
+        label = self.classes[best_idx]
+        confidence = round(float(proba[best_idx]) * 100)
+
+        # Probability that this flow is ANY attack (1 - P(benign)); this is what
+        # the calibrated threshold gates on.
+        attack_proba = 1.0
+        for i, c in enumerate(self.classes):
+            if c in NORMAL_LABELS:
+                attack_proba = 1.0 - float(proba[i])
+                break
+
+        if label in NORMAL_LABELS or attack_proba < self.threshold:
             return ScoredFlow(attack_type=None, confidence=confidence, severity="low")
 
         return ScoredFlow(
