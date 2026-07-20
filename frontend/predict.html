@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Network-Traffix — Predict a Flow</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,600;0,9..144,700;1,9..144,700&display=swap"
+      rel="stylesheet"
+    />
+    <!-- reuse the dashboard's design tokens (colors, fonts, severity vars) -->
+    <link rel="stylesheet" href="styles.css" />
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+
+    <style>
+      /* Predict-page layout only -- colors come from styles.css :root tokens. */
+      .pp-wrap { max-width: 860px; margin: 0 auto; padding: 40px 24px 80px; }
+      .pp-title { font-family: var(--font-display, "Fraunces", serif); font-size: 34px; margin: 0 0 6px; color: var(--color-black, #111); }
+      .pp-sub { color: var(--color-muted, #6b6b6b); margin: 0 0 28px; font-family: var(--font-ui, "Inter", sans-serif); }
+      .pp-card { background: var(--color-surface, #fff); border: 1px solid var(--color-line, #d8d8d8); border-radius: 14px; padding: 22px; margin-bottom: 22px; }
+      .pp-label { font-weight: 600; font-size: 13px; color: var(--color-muted, #6b6b6b); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 10px; }
+      .pp-examples { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+      .pp-chip { border: 1px solid var(--color-line, #d8d8d8); background: var(--color-surface-2, #f4f4f4); border-radius: 999px; padding: 6px 14px; font-size: 13px; cursor: pointer; font-family: var(--font-ui, "Inter", sans-serif); }
+      .pp-chip:hover { border-color: var(--color-blue, #3b82f6); color: var(--color-blue, #3b82f6); }
+      textarea { width: 100%; box-sizing: border-box; min-height: 90px; resize: vertical; border: 1px solid var(--color-line, #d8d8d8); border-radius: 10px; padding: 12px; font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 12px; }
+      .pp-btn { background: var(--color-black, #111); color: #fff; border: 0; border-radius: 10px; padding: 12px 22px; font-weight: 600; cursor: pointer; font-family: var(--font-ui, "Inter", sans-serif); font-size: 15px; margin-top: 12px; }
+      .pp-btn:disabled { opacity: .5; cursor: default; }
+      .pp-result-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+      .pp-verdict { font-family: var(--font-display, "Fraunces", serif); font-size: 30px; margin: 0; }
+      .pp-badge { display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
+      .pp-meta { color: var(--color-muted, #6b6b6b); font-size: 14px; margin: 10px 0 4px; font-family: var(--font-ui, "Inter", sans-serif); }
+      .pp-bar-row { display: grid; grid-template-columns: 220px 1fr 46px; align-items: center; gap: 12px; margin: 8px 0; font-family: var(--font-ui, "Inter", sans-serif); font-size: 13px; }
+      .pp-bar-track { background: var(--color-surface-2, #f4f4f4); border-radius: 6px; height: 16px; overflow: hidden; }
+      .pp-bar-fill { height: 100%; background: var(--color-blue, #3b82f6); border-radius: 6px; }
+      .pp-feat { font-family: ui-monospace, monospace; font-size: 12px; color: var(--color-black, #111); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pp-err { color: var(--sev-critical, #a73b3b); background: var(--sev-critical-bg, #f0d6d6); border-radius: 10px; padding: 12px; font-family: var(--font-ui, "Inter", sans-serif); font-size: 14px; }
+      .pp-link { display: inline-block; margin-bottom: 20px; color: var(--color-blue, #3b82f6); text-decoration: none; font-family: var(--font-ui, "Inter", sans-serif); font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" data-presets="react">
+      const { useState } = React;
+      const API_BASE = "http://127.0.0.1:8000";
+
+      // Real held-out CICIDS rows, preloaded so the demo is one click.
+      const EXAMPLES = {
+        "DoS (attack)": "80,1878,3,6,382,11595,382,0,127.3333333,220.5478028,4355,0,1932.5,2182.468304,6377529.286,4792.332268,234.75,229.1298758,577,15,975,487.5,265.1650429,675,300,1780,356,399.7880689,950,15,0,0,0,0,104,200,1597.444089,3194.888179,0,4355,1197.7,1886.332364,3558249.789,0,0,0,1,0,0,0,0,2,1330.777778,127.3333333,1932.5,104,0,0,0,0,0,0,3,382,6,11595,29200,235,1,32,0,0,0,0,0,0,0,0,DoS Hulk",
+        "Port Scan (attack)": "80,5021059,6,5,703,1414,356,0,117.1666667,181.5361305,1050,0,282.8,456.923626,421.6242032,2.190772903,502105.9,1568379.157,4965658,19,55401,11080.2,17612.66701,41863,19,5020928,1255232,2499939.593,5005133,1053,0,0,0,0,200,168,1.194967038,0.995805865,0,1050,176.4166667,317.4711034,100787.9015,0,0,0,1,0,0,0,0,0,192.4545455,117.1666667,282.8,200,0,0,0,0,0,0,6,703,5,1414,29200,243,2,32,0,0,0,0,0,0,0,0,PortScan",
+        "Normal traffic": "80,38308,1,1,6,6,6,6,6,0,6,6,6,0,313.250496,52.208416,38308,0,38308,38308,0,0,0,0,0,0,0,0,0,0,0,0,0,0,20,20,26.104208,26.104208,6,6,6,0,0,0,0,0,0,1,1,0,0,1,9,6,6,20,0,0,0,0,0,0,1,6,1,6,255,946,0,20,0,0,0,0,0,0,0,0,BENIGN",
+      };
+
+      const SEV = {
+        low: ["var(--sev-low,#6c7a89)", "var(--sev-low-bg,#e4e7ea)"],
+        medium: ["var(--sev-medium,#a9791f)", "var(--sev-medium-bg,#f1e4c4)"],
+        high: ["var(--sev-high,#b45a2a)", "var(--sev-high-bg,#f1dcc9)"],
+        critical: ["var(--sev-critical,#a73b3b)", "var(--sev-critical-bg,#f0d6d6)"],
+      };
+
+      function Result({ data }) {
+        const verdict = data.is_attack ? data.attack_type : "Normal traffic";
+        const [fg, bg] = SEV[data.severity] || SEV.low;
+        return (
+          <div className="pp-card">
+            <div className="pp-result-head">
+              <h2 className="pp-verdict">{verdict}</h2>
+              <span className="pp-badge" style={{ color: fg, background: bg }}>
+                {data.severity}
+              </span>
+              <span className="pp-badge" style={{ color: "var(--color-blue)", background: "var(--color-highlight,#bfe3f5)" }}>
+                {data.confidence}% confidence
+              </span>
+            </div>
+            <p className="pp-meta">
+              {data.ground_truth ? <>Actual label in row: <b>{data.ground_truth}</b> · </> : null}
+              Model: <b>{data.model}</b>
+            </p>
+
+            <div className="pp-label" style={{ marginTop: 18 }}>Why — top feature contributions (SHAP)</div>
+            {data.explanation.map((c, i) => (
+              <div className="pp-bar-row" key={i}>
+                <span className="pp-feat" title={c.feature}>{c.feature}</span>
+                <span className="pp-bar-track"><span className="pp-bar-fill" style={{ width: c.contribution + "%" }} /></span>
+                <span style={{ textAlign: "right" }}>{c.contribution}%</span>
+              </div>
+            ))}
+          </div>
+        );
+      }
+
+      function App() {
+        const [row, setRow] = useState("");
+        const [data, setData] = useState(null);
+        const [err, setErr] = useState(null);
+        const [loading, setLoading] = useState(false);
+
+        async function predict() {
+          setLoading(true); setErr(null); setData(null);
+          try {
+            const res = await fetch(`${API_BASE}/api/predict`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ row }),
+            });
+            const body = await res.json();
+            if (!res.ok) throw new Error(body.detail || "Prediction failed");
+            setData(body);
+          } catch (e) {
+            setErr(e.message);
+          } finally {
+            setLoading(false);
+          }
+        }
+
+        return (
+          <div className="pp-wrap">
+            <a className="pp-link" href="dashboard.html">← Back to incident console</a>
+            <h1 className="pp-title">Predict a Flow</h1>
+            <p className="pp-sub">Paste a CICIDS-2017 flow row — the model classifies it and shows which features drove the decision.</p>
+
+            <div className="pp-card">
+              <div className="pp-label">Load an example</div>
+              <div className="pp-examples">
+                {Object.keys(EXAMPLES).map((k) => (
+                  <button className="pp-chip" key={k} onClick={() => { setRow(EXAMPLES[k]); setData(null); setErr(null); }}>{k}</button>
+                ))}
+              </div>
+              <div className="pp-label">Flow row</div>
+              <textarea
+                value={row}
+                onChange={(e) => setRow(e.target.value)}
+                placeholder="Paste a comma-separated CICIDS-2017 row here (78 features, or 79 with the trailing Label)…"
+              />
+              <br />
+              <button className="pp-btn" onClick={predict} disabled={loading || !row.trim()}>
+                {loading ? "Scoring…" : "Predict"}
+              </button>
+            </div>
+
+            {err ? <div className="pp-err">⚠ {err}</div> : null}
+            {data ? <Result data={data} /> : null}
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
